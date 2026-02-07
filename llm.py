@@ -26,7 +26,7 @@ class StreamChunk:
 
 
 def stream_chat_response(
-    messages: List[Dict[str, str]],
+    messages: List[Dict],
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     model: str = "gpt-4o-mini",
@@ -37,7 +37,8 @@ def stream_chat_response(
     Stream chat response from OpenAI API.
 
     Args:
-        messages: List of message dicts with 'role' and 'content' keys
+        messages: List of message dicts with 'role' and 'content' keys.
+                 Content can be a string or a list for multimodal (image) support.
         api_key: OpenAI API key (optional if set in environment)
         base_url: Custom API base URL for OpenAI-compatible services (e.g., Ollama, vLLM)
         model: Model name to use

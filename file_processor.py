@@ -1,14 +1,16 @@
 """
-File content extraction for text-based files.
+File content extraction for text-based and image files.
 """
 import os
-from typing import Optional, Tuple
+import base64
+from typing import Optional, Tuple, Union
+from io import BytesIO
 
 # Maximum file size in bytes (5MB)
 MAX_FILE_SIZE = 5 * 1024 * 1024
 
 # Supported text file extensions
-SUPPORTED_EXTENSIONS = {
+TEXT_EXTENSIONS = {
     '.txt', '.md', '.markdown',
     '.py', '.js', '.ts', '.jsx', '.tsx',
     '.json', '.yaml', '.yml', '.toml',
@@ -20,6 +22,14 @@ SUPPORTED_EXTENSIONS = {
     '.log', '.ini', '.cfg', '.conf',
 }
 
+# Supported image file extensions
+IMAGE_EXTENSIONS = {
+    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.tif'
+}
+
+# All supported extensions
+SUPPORTED_EXTENSIONS = TEXT_EXTENSIONS | IMAGE_EXTENSIONS
+
 
 def get_file_extension(filename: str) -> str:
     """Get the lowercase file extension."""
@@ -29,6 +39,16 @@ def get_file_extension(filename: str) -> str:
 def is_supported_file(filename: str) -> bool:
     """Check if file type is supported."""
     return get_file_extension(filename) in SUPPORTED_EXTENSIONS
+
+
+def is_image_file(filename: str) -> bool:
+    """Check if file is an image."""
+    return get_file_extension(filename) in IMAGE_EXTENSIONS
+
+
+def is_text_file(filename: str) -> bool:
+    """Check if file is a text file."""
+    return get_file_extension(filename) in TEXT_EXTENSIONS
 
 
 def check_file_size(file_size: int) -> Tuple[bool, str]:
@@ -127,3 +147,56 @@ def format_file_for_context(filename: str, content: str, max_length: int = 10000
         return f"File: {filename}\n```\n{truncated}\n... (truncated, {len(content) - max_length} more characters)\n```"
 
     return f"File: {filename}\n```\n{content}\n```"
+
+
+def read_image_as_base64(file_obj, filename: str) -> Tuple[Optional[str], str]:
+    """
+    Read an image file and return as base64 encoded string.
+
+    Args:
+        file_obj: A file-like object
+        filename: Name of the file
+
+    Returns:
+        Tuple of (base64_string, error_message)
+        base64_string includes data URI prefix (e.g., data:image/jpeg;base64,...)
+    """
+    try:
+        # Check file size
+        file_obj.seek(0, os.SEEK_END)
+        file_size = file_obj.tell()
+        file_obj.seek(0)
+
+        is_valid, error_msg = check_file_size(file_size)
+        if not is_valid:
+            return None, error_msg
+
+        # Check if it's an image file
+        if not is_image_file(filename):
+            return None, f"File '{filename}' is not a supported image format"
+
+        # Read image bytes
+        image_bytes = file_obj.read()
+
+        # Determine MIME type
+        ext = get_file_extension(filename)
+        mime_types = {
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+            '.bmp': 'image/bmp',
+            '.tiff': 'image/tiff',
+            '.tif': 'image/tiff',
+        }
+        mime_type = mime_types.get(ext, 'image/jpeg')
+
+        # Encode to base64
+        base64_data = base64.b64encode(image_bytes).decode('utf-8')
+        data_uri = f"data:{mime_type};base64,{base64_data}"
+
+        return data_uri, ""
+
+    except Exception as e:
+        return None, f"Error reading image: {str(e)}"

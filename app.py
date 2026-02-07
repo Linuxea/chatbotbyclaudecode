@@ -265,25 +265,41 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
 
     st.title(f"💬 {title}")
 
-    # File uploader (only show when there's a message or at start)
+    # File uploader (supports both text and images)
     uploaded_file = st.file_uploader(
         "📎 Upload a file (optional)",
         type=list(file_processor.SUPPORTED_EXTENSIONS),
-        help="Upload a text file to include its content in the conversation"
+        help="Upload a text file or image to include in the conversation"
     )
 
     # Display file info if uploaded
     file_content = None
+    image_data = None
+    is_image = False
+
     if uploaded_file is not None:
-        content, error = file_processor.extract_text_from_file(
-            uploaded_file, uploaded_file.name
-        )
-        if error:
-            st.error(error)
+        filename = uploaded_file.name
+
+        # Check if it's an image
+        if file_processor.is_image_file(filename):
+            is_image = True
+            image_data, error = file_processor.read_image_as_base64(uploaded_file, filename)
+            if error:
+                st.error(error)
+                image_data = None
+            else:
+                # Display image preview
+                with st.expander(f"🖼️ {filename} (Image)", expanded=True):
+                    st.image(uploaded_file, use_container_width=True)
         else:
-            file_content = content
-            with st.expander(f"📄 {uploaded_file.name} ({len(content)} characters)"):
-                st.code(content[:2000] + ("..." if len(content) > 2000 else ""))
+            # Text file
+            content, error = file_processor.extract_text_from_file(uploaded_file, filename)
+            if error:
+                st.error(error)
+            else:
+                file_content = content
+                with st.expander(f"📄 {filename} ({len(content)} characters)"):
+                    st.code(content[:2000] + ("..." if len(content) > 2000 else ""))
 
     # Display chat messages
     for message in st.session_state.messages:
@@ -298,7 +314,11 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
                     unsafe_allow_html=True
                 )
                 st.markdown("**💬 Response:**")
+            # Display message content
             st.markdown(message["content"])
+            # Display attached image if present
+            if message.get("image"):
+                st.image(message["image"], use_container_width=True)
 
     # Chat input
     if prompt := st.chat_input("Type your message..."):
@@ -312,17 +332,16 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
         display_message = prompt
         if file_content:
             display_message = f"{prompt}\n\n*[File attached: {uploaded_file.name}]*"
+        elif image_data:
+            display_message = f"{prompt}\n\n*[Image attached: {uploaded_file.name}]*"
 
         # Add user message to UI
         with st.chat_message("user"):
             st.markdown(display_message)
+            if image_data:
+                st.image(uploaded_file, use_container_width=True)
 
-        # Save user message to database
-        # If there's file content, we include it in what we send to the API but save the original
-        api_message = prompt
-        if file_content:
-            api_message = f"{prompt}\n\n[File Content from {uploaded_file.name}]:\n{file_content}"
-
+        # Save user message to database (text only, image reference as text)
         database.save_message(
             st.session_state.current_conversation_id,
             "user",
@@ -330,7 +349,10 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
         )
 
         # Update session state
-        st.session_state.messages.append({"role": "user", "content": display_message})
+        message_data = {"role": "user", "content": display_message}
+        if image_data:
+            message_data["image"] = image_data  # Store base64 for display
+        st.session_state.messages.append(message_data)
 
         # Get API key
         api_key = st.session_state.api_key or os.getenv("DEEPSEEK_API_KEY")
@@ -340,11 +362,40 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
                 st.error("Please provide a DeepSeek API key in the sidebar or set DEEPSEEK_API_KEY environment variable.")
         else:
             # Prepare messages for API
-            # We need to reconstruct the history with the full content (including file)
+            # We need to reconstruct the history with the full content (including file/image)
             api_messages = []
+
+            # Add historical messages
             for msg in st.session_state.messages[:-1]:  # All except current
-                api_messages.append({"role": msg["role"], "content": msg["content"]})
-            api_messages.append({"role": "user", "content": api_message})
+                if msg.get("image"):
+                    # Multimodal format for messages with images
+                    api_messages.append({
+                        "role": msg["role"],
+                        "content": [
+                            {"type": "text", "text": msg["content"]},
+                            {"type": "image_url", "image_url": {"url": msg["image"]}}
+                        ]
+                    })
+                else:
+                    api_messages.append({"role": msg["role"], "content": msg["content"]})
+
+            # Add current user message with file/image content
+            if image_data:
+                # Multimodal format for image
+                api_messages.append({
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_data}}
+                    ]
+                })
+            elif file_content:
+                # Text file content appended to message
+                api_message = f"{prompt}\n\n[File Content from {uploaded_file.name}]:\n{file_content}"
+                api_messages.append({"role": "user", "content": api_message})
+            else:
+                # Plain text message
+                api_messages.append({"role": "user", "content": prompt})
 
             # Get streaming response
             with st.chat_message("assistant"):
