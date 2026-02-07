@@ -38,6 +38,40 @@ if "selected_model" not in st.session_state:
     st.session_state.selected_model = None
 if "models_fetched_for" not in st.session_state:
     st.session_state.models_fetched_for = None
+if "max_tokens" not in st.session_state:
+    st.session_state.max_tokens = 2000
+
+
+def get_model_default_max_tokens(model: str) -> int:
+    """Get recommended max_tokens for a specific model."""
+    model_lower = model.lower()
+
+    # DeepSeek models
+    if "deepseek-reasoner" in model_lower or "reasoner" in model_lower:
+        return 32000  # Reasoner needs more tokens for CoT
+    if "deepseek-chat" in model_lower:
+        return 4096
+
+    # OpenAI models
+    if "gpt-4o" in model_lower or "gpt-4-turbo" in model_lower:
+        return 4096
+    if "gpt-3.5-turbo" in model_lower:
+        return 2048
+
+    # Kimi models
+    if "moonshot" in model_lower:
+        if "128k" in model_lower:
+            return 8192
+        if "32k" in model_lower:
+            return 4096
+        return 2048  # 8k model
+
+    # Claude models (if supported)
+    if "claude" in model_lower:
+        return 4096
+
+    # Default for unknown models
+    return 2000
 
 
 def parse_message_content(content: str) -> dict:
@@ -186,6 +220,14 @@ def render_sidebar():
             index=model_index,
             help="选择要使用的模型"
         )
+
+        # Update max_tokens when model changes
+        if current_model != st.session_state.selected_model:
+            st.session_state.selected_model = current_model
+            recommended_tokens = get_model_default_max_tokens(current_model)
+            st.session_state.max_tokens = recommended_tokens
+            st.rerun()
+
         st.session_state.selected_model = current_model
 
         # Temperature slider
@@ -198,15 +240,20 @@ def render_sidebar():
             help="Higher values make output more random, lower values more deterministic"
         )
 
+        # Determine max tokens range based on model
+        max_tokens_limit = 64000 if "reasoner" in current_model.lower() else 16000
+        default_tokens = get_model_default_max_tokens(current_model)
+
         # Max tokens slider
         max_tokens = st.slider(
             "Max Tokens",
             min_value=100,
-            max_value=4000,
-            value=2000,
+            max_value=max_tokens_limit,
+            value=st.session_state.max_tokens if st.session_state.max_tokens <= max_tokens_limit else default_tokens,
             step=100,
-            help="Maximum number of tokens to generate"
+            help=f"Maximum number of tokens to generate. Recommended: {default_tokens} for {current_model}"
         )
+        st.session_state.max_tokens = max_tokens
 
         st.divider()
 
