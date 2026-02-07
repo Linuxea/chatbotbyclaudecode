@@ -32,10 +32,37 @@ if "base_url" not in st.session_state:
     st.session_state.base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 
 
+def parse_message_content(content: str) -> dict:
+    """Parse message content to extract reasoning if present."""
+    import re
+    reasoning_pattern = r'\[REASONING\](.*?)\[/REASONING\]'
+    match = re.search(reasoning_pattern, content, re.DOTALL)
+
+    if match:
+        reasoning = match.group(1).strip()
+        # Remove the reasoning tag from content
+        clean_content = re.sub(reasoning_pattern, '', content, flags=re.DOTALL).strip()
+        return {"content": clean_content, "reasoning": reasoning}
+    return {"content": content}
+
+
 def load_conversation(conversation_id: int):
     """Load a conversation into session state."""
     st.session_state.current_conversation_id = conversation_id
-    st.session_state.messages = database.get_conversation_messages(conversation_id)
+    raw_messages = database.get_conversation_messages(conversation_id)
+
+    # Parse messages to extract reasoning
+    parsed_messages = []
+    for msg in raw_messages:
+        parsed_msg = {"role": msg["role"], "content": msg["content"]}
+        if msg["role"] == "assistant":
+            parsed = parse_message_content(msg["content"])
+            parsed_msg["content"] = parsed["content"]
+            if "reasoning" in parsed:
+                parsed_msg["reasoning"] = parsed["reasoning"]
+        parsed_messages.append(parsed_msg)
+
+    st.session_state.messages = parsed_messages
 
 
 def start_new_conversation():
@@ -186,6 +213,16 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
     # Display chat messages
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
+            # If assistant message has reasoning, display it
+            if message["role"] == "assistant" and message.get("reasoning"):
+                st.markdown("**🤔 Thinking:**")
+                st.markdown(
+                    f"<div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; color: #666;'>"
+                    f"{message['reasoning']}"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+                st.markdown("**💬 Response:**")
             st.markdown(message["content"])
 
     # Chat input
@@ -236,8 +273,15 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
 
             # Get streaming response
             with st.chat_message("assistant"):
-                response_container = st.empty()
                 full_response = ""
+                full_reasoning = ""
+                has_reasoning = False
+
+                # Create containers for reasoning and content
+                reasoning_header = st.empty()
+                reasoning_container = st.empty()
+                content_header = st.empty()
+                content_container = st.empty()
 
                 # Stream the response
                 for chunk in llm.stream_chat_response(
@@ -248,18 +292,42 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
                     temperature=temperature,
                     max_tokens=max_tokens
                 ):
-                    full_response += chunk
-                    response_container.markdown(full_response)
+                    # Accumulate reasoning content
+                    if chunk.reasoning:
+                        has_reasoning = True
+                        full_reasoning += chunk.reasoning
+                        reasoning_header.markdown("**🤔 Thinking:**")
+                        reasoning_container.markdown(
+                            f"<div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; color: #666;'>"
+                            f"{full_reasoning}"
+                            f"</div>",
+                            unsafe_allow_html=True
+                        )
 
-                # Save assistant response to database
+                    # Accumulate main content
+                    if chunk.content:
+                        full_response += chunk.content
+                        content_header.markdown("**💬 Response:**")
+                        content_container.markdown(full_response)
+
+                # Update session state with both reasoning and content
+                message_data = {
+                    "role": "assistant",
+                    "content": full_response,
+                }
+                if full_reasoning.strip():
+                    message_data["reasoning"] = full_reasoning
+                st.session_state.messages.append(message_data)
+
+                # Save assistant response to database (store reasoning + content)
+                content_to_save = full_response
+                if full_reasoning.strip():
+                    content_to_save = f"[REASONING]{full_reasoning}[/REASONING]\n\n{full_response}"
                 database.save_message(
                     st.session_state.current_conversation_id,
                     "assistant",
-                    full_response
+                    content_to_save
                 )
-
-                # Update session state
-                st.session_state.messages.append({"role": "assistant", "content": full_response})
 
         # Rerun to update UI (clear file uploader, etc.)
         st.rerun()
