@@ -29,7 +29,15 @@ if "messages" not in st.session_state:
 if "api_key" not in st.session_state:
     st.session_state.api_key = ""
 if "base_url" not in st.session_state:
-    st.session_state.base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    st.session_state.base_url = "https://api.deepseek.com"
+if "provider" not in st.session_state:
+    st.session_state.provider = "DeepSeek"
+if "available_models" not in st.session_state:
+    st.session_state.available_models = llm.PROVIDERS["DeepSeek"]["default_models"]
+if "selected_model" not in st.session_state:
+    st.session_state.selected_model = None
+if "models_fetched_for" not in st.session_state:
+    st.session_state.models_fetched_for = None
 
 
 def parse_message_content(content: str) -> dict:
@@ -86,32 +94,99 @@ def render_sidebar():
     with st.sidebar:
         st.title("⚙️ Settings")
 
+        # Provider selection
+        provider = st.selectbox(
+            "服务商",
+            options=list(llm.PROVIDERS.keys()),
+            index=list(llm.PROVIDERS.keys()).index(st.session_state.provider),
+            help="选择 AI 服务商"
+        )
+
+        # Update provider and related settings when changed
+        if provider != st.session_state.provider:
+            st.session_state.provider = provider
+            provider_config = llm.PROVIDERS[provider]
+            st.session_state.base_url = provider_config["base_url"]
+            st.session_state.api_key = os.getenv(provider_config["env_key"], "")
+            st.session_state.available_models = provider_config["default_models"]
+            st.session_state.selected_model = None  # Reset selected model
+            st.session_state.models_fetched_for = None  # Reset fetch flag
+            st.rerun()
+
+        provider_config = llm.PROVIDERS[provider]
+
         # API Key input
+        env_key = provider_config["env_key"]
         api_key = st.text_input(
-            "DeepSeek API Key",
+            "API Key",
             type="password",
             value=st.session_state.api_key,
-            placeholder="sk-...",
-            help="Your DeepSeek API key. Leave empty to use DEEPSEEK_API_KEY environment variable."
+            placeholder=f"从 {env_key} 环境变量读取" if env_key else "输入 API Key",
+            help=f"Leave empty to use {env_key} environment variable." if env_key else "输入 API Key"
         )
         st.session_state.api_key = api_key
 
-        # Base URL input for DeepSeek API
-        base_url = st.text_input(
-            "Base URL",
-            value=st.session_state.base_url,
-            placeholder="https://api.deepseek.com",
-            help="DeepSeek API base URL (default: https://api.deepseek.com)"
-        )
-        st.session_state.base_url = base_url
+        # Base URL display/input
+        if provider == "自定义":
+            base_url = st.text_input(
+                "Base URL",
+                value=st.session_state.base_url,
+                placeholder="https://api.example.com/v1",
+                help="自定义 API Base URL"
+            )
+            st.session_state.base_url = base_url
+        else:
+            base_url = provider_config["base_url"]
+            st.info(f"Base URL: {base_url}")
+
+        # Auto-fetch models when provider changes or on initial load
+        actual_api_key = api_key or os.getenv(env_key, "")
+        if (st.session_state.models_fetched_for != provider and
+            actual_api_key and base_url and provider != "自定义"):
+            with st.spinner("获取模型列表..."):
+                models = llm.get_available_models(actual_api_key, base_url)
+                if models:
+                    st.session_state.available_models = models
+                    st.session_state.models_fetched_for = provider
+                    # Try to keep previous selection if available
+                    if st.session_state.selected_model in models:
+                        st.rerun()
+
+        # Manual refresh button
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.markdown("**模型列表**")
+        with col2:
+            if st.button("🔄", help="刷新模型列表"):
+                if actual_api_key and base_url:
+                    with st.spinner("获取中..."):
+                        models = llm.get_available_models(actual_api_key, base_url)
+                        if models:
+                            st.session_state.available_models = models
+                            st.session_state.models_fetched_for = provider
+                            st.success(f"获取 {len(models)} 个模型")
+                            st.rerun()
+                        else:
+                            st.error("获取失败，使用默认列表")
+                else:
+                    st.error("请先配置 API Key")
 
         # Model selection
-        model = st.selectbox(
-            "Model",
-            options=llm.AVAILABLE_MODELS,
-            index=0,
-            help="Select the OpenAI model to use"
+        available_models = st.session_state.available_models or provider_config["default_models"]
+
+        # Determine index for model selectbox
+        if st.session_state.selected_model and st.session_state.selected_model in available_models:
+            model_index = available_models.index(st.session_state.selected_model)
+        else:
+            model_index = 0
+
+        current_model = st.selectbox(
+            "选择模型",
+            options=available_models,
+            index=model_index,
+            help="选择要使用的模型"
         )
+        st.session_state.selected_model = current_model
 
         # Temperature slider
         temperature = st.slider(
@@ -176,7 +251,7 @@ def render_sidebar():
                             start_new_conversation()
                         st.rerun()
 
-        return model, temperature, max_tokens, base_url
+        return current_model, temperature, max_tokens, base_url
 
 
 def render_chat_interface(model: str, temperature: float, max_tokens: int, base_url: str):

@@ -146,8 +146,49 @@ def format_messages_for_api(
     return messages
 
 
-# Available models (DeepSeek)
-AVAILABLE_MODELS = [
-    "deepseek-chat",
-    "deepseek-reasoner",
-]
+# Provider configurations
+PROVIDERS = {
+    "DeepSeek": {
+        "base_url": "https://api.deepseek.com",
+        "env_key": "DEEPSEEK_API_KEY",
+        "default_models": ["deepseek-chat", "deepseek-reasoner"],
+    },
+    "Moonshot (Kimi)": {
+        "base_url": "https://api.moonshot.cn/v1",
+        "env_key": "MOONSHOT_API_KEY",
+        "default_models": ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
+    },
+    "OpenAI": {
+        "base_url": "https://api.openai.com/v1",
+        "env_key": "OPENAI_API_KEY",
+        "default_models": ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo", "gpt-4-turbo"],
+    },
+    "自定义": {
+        "base_url": "",
+        "env_key": "",
+        "default_models": [],
+    },
+}
+
+
+def get_available_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None
+) -> List[str]:
+    """
+    Fetch available models from the API.
+
+    Args:
+        api_key: API key
+        base_url: Custom base URL
+
+    Returns:
+        List of model IDs
+    """
+    try:
+        client = get_client(api_key, base_url)
+        models = client.models.list()
+        return sorted([m.id for m in models.data])
+    except Exception as e:
+        # Return empty list if API call fails
+        return []
