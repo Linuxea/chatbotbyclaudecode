@@ -40,6 +40,8 @@ if "models_fetched_for" not in st.session_state:
     st.session_state.models_fetched_for = None
 if "max_tokens" not in st.session_state:
     st.session_state.max_tokens = 2000
+if "system_prompt" not in st.session_state:
+    st.session_state.system_prompt = ""
 
 
 def get_model_default_max_tokens(model: str) -> int:
@@ -255,6 +257,28 @@ def render_sidebar():
         )
         st.session_state.max_tokens = max_tokens
 
+        # System Prompt (collapsible)
+        with st.expander("📝 System Prompt (可选)", expanded=False):
+            system_prompt = st.text_area(
+                "自定义系统提示词",
+                value=st.session_state.system_prompt,
+                placeholder="你是一个有帮助的助手...",
+                help="设置 AI 的角色和行为方式。留空则使用默认设置。",
+                height=100
+            )
+            st.session_state.system_prompt = system_prompt
+
+            # Quick presets
+            preset_col1, preset_col2 = st.columns(2)
+            with preset_col1:
+                if st.button("🎯 代码助手", use_container_width=True):
+                    st.session_state.system_prompt = "You are an expert programmer. Provide clean, well-documented code with explanations."
+                    st.rerun()
+            with preset_col2:
+                if st.button("📝 翻译助手", use_container_width=True):
+                    st.session_state.system_prompt = "You are a professional translator. Translate accurately while maintaining the original meaning and tone."
+                    st.rerun()
+
         st.divider()
 
         # New conversation button
@@ -411,6 +435,10 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
             # Prepare messages for API
             # We need to reconstruct the history with the full content (including file/image)
             api_messages = []
+
+            # Add system prompt if set
+            if st.session_state.system_prompt.strip():
+                api_messages.append({"role": "system", "content": st.session_state.system_prompt.strip()})
 
             # Add historical messages
             for msg in st.session_state.messages[:-1]:  # All except current
