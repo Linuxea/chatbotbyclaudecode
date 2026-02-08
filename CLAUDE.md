@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Streamlit-based AI chatbot application with multi-provider LLM support (DeepSeek, OpenAI, Moonshot/Kimi, and custom OpenAI-compatible APIs). It features persistent chat history via SQLite, file upload support (text and images), streaming responses, and reasoning display for models like DeepSeek-R1.
+This is a Streamlit-based AI chatbot application with multi-provider LLM support (DeepSeek, OpenAI, Moonshot/Kimi, and custom OpenAI-compatible APIs). It features persistent chat history via SQLite, file upload support (text and images), streaming responses, reasoning display for models like DeepSeek-R1, and tool calling with chart visualization.
 
 ## Common Commands
 
@@ -30,9 +30,12 @@ cp .env.example .env
 ### Module Structure
 
 - **app.py**: Main Streamlit application with UI rendering, session state management, and chat interface
-- **llm.py**: OpenAI API wrapper with streaming support, provider configurations, and model fetching
+- **llm.py**: OpenAI API wrapper with streaming support, provider configurations, model fetching, and DSML parsing for DeepSeek tool calls
 - **database.py**: SQLite operations for conversation and message persistence
 - **file_processor.py**: Text and image file handling for multimodal conversations
+- **chart_tools.py**: Chart rendering tools for AI assistant (bar, line, pie, scatter, area, histogram charts)
+- **tool_executor.py**: Tool registry and execution framework for function calling
+- **logger.py**: Debug logging module for LLM interactions (logs to `llm_debug.log`)
 
 ### Key Architectural Patterns
 
@@ -50,6 +53,12 @@ cp .env.example .env
 **Reasoning Extraction**: DeepSeek-R1 and similar reasoning models return `reasoning_content` in the delta. The app stores reasoning wrapped in `[REASONING]...[/REASONING]` tags in the database and parses it for display.
 
 **Multimodal Support**: Images are converted to base64 data URIs via `file_processor.read_image_as_base64()` and included in message content as OpenAI-compatible image objects.
+
+**Tool Execution Framework**: The app supports function calling through:
+- `tool_executor.ToolRegistry`: Registers tool definitions and their handlers
+- `tool_executor.ToolExecutor`: Executes tool calls and builds tool response messages
+- `chart_tools`: Provides chart visualization tools (render_chart function) that can be called by the LLM
+- DeepSeek-specific DSML parsing in `llm.parse_dsml_tool_calls()` for models that use DeepSeek's proprietary markup format
 
 ### Database Schema
 
@@ -75,6 +84,8 @@ Default max_tokens vary by model (see `get_model_default_max_tokens()` in app.py
 **New Provider**: Add entry to `PROVIDERS` dict in `llm.py` with base_url, env_key, and default_models.
 
 **New File Type**: Extend `SUPPORTED_EXTENSIONS` in `file_processor.py` and add handling logic.
+
+**New Tool**: Add tool definition to `chart_tools.CHART_TOOLS` or create new tool definitions, then register handlers in `tool_executor.ToolRegistry`.
 
 **UI Changes**: Modify `render_sidebar()` or `render_chat_interface()` in `app.py`.
 
