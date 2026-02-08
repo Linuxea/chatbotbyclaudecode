@@ -4,7 +4,6 @@ SQLite database operations for chat history persistence.
 import sqlite3
 from datetime import datetime
 from typing import List, Dict, Optional
-import json
 
 DB_PATH = "chat_history.db"
 
@@ -16,7 +15,7 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-def init_database():
+def init_database() -> None:
     """Initialize the database with required tables."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -64,7 +63,7 @@ def create_conversation(title: str = "New Conversation") -> int:
     return conversation_id
 
 
-def update_conversation_title(conversation_id: int, title: str):
+def update_conversation_title(conversation_id: int, title: str) -> None:
     """Update the title of a conversation."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -78,7 +77,7 @@ def update_conversation_title(conversation_id: int, title: str):
     conn.close()
 
 
-def update_conversation_timestamp(conversation_id: int):
+def update_conversation_timestamp(conversation_id: int) -> None:
     """Update the updated_at timestamp of a conversation."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -180,7 +179,7 @@ def get_conversation(conversation_id: int) -> Optional[Dict]:
     }
 
 
-def delete_conversation(conversation_id: int):
+def delete_conversation(conversation_id: int) -> None:
     """Delete a conversation and all its messages."""
     conn = get_connection()
     cursor = conn.cursor()

@@ -4,7 +4,7 @@ Supports OpenAI API, multi-turn conversations, chat history persistence, and fil
 """
 import streamlit as st
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 import database
 import llm
@@ -127,7 +127,7 @@ def save_current_conversation():
             database.update_conversation_title(st.session_state.current_conversation_id, title)
 
 
-def render_sidebar():
+def render_sidebar() -> Tuple[str, float, int, Optional[str]]:
     """Render the sidebar with settings and history."""
     with st.sidebar:
         st.title("⚙️ Settings")
@@ -348,7 +348,7 @@ def render_sidebar():
         return current_model, temperature, max_tokens, base_url
 
 
-def render_chat_interface(model: str, temperature: float, max_tokens: int, base_url: str):
+def render_chat_interface(model: str, temperature: float, max_tokens: int, base_url: Optional[str]):
     """Render the main chat interface."""
     # Header
     if st.session_state.current_conversation_id:

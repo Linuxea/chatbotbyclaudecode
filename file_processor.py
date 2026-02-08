@@ -3,8 +3,7 @@ File content extraction for text-based and image files.
 """
 import os
 import base64
-from typing import Optional, Tuple, Union
-from io import BytesIO
+from typing import Optional, Tuple
 
 # Maximum file size in bytes (5MB)
 MAX_FILE_SIZE = 5 * 1024 * 1024
