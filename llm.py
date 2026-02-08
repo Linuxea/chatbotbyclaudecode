@@ -2,7 +2,9 @@
 OpenAI API wrapper for chat completions with streaming support.
 """
 import os
-from typing import List, Dict, Iterator, Optional
+import re
+import json
+from typing import List, Dict, Iterator, Optional, Tuple
 from openai import OpenAI
 
 
@@ -18,11 +20,119 @@ def get_client(api_key: Optional[str] = None, base_url: Optional[str] = None) ->
     return OpenAI(**kwargs)
 
 
+def parse_dsml_tool_calls(content: str) -> Tuple[List[Dict], str]:
+    """
+    Parse DeepSeek DSML format tool calls from content.
+
+    DeepSeek uses a proprietary DSML (DeepSeek Markup Language) format:
+    <｜DSML｜function_calls>
+    <function_cinvoke name="function_name">
+      <parameter name="param_name" string="true">value</parameter>
+    </function_cinvoke>
+    </｜DSML｜function_calls>
+
+    Args:
+        content: The response content that may contain DSML tags
+
+    Returns:
+        Tuple of (list of parsed tool calls, cleaned content without DSML tags)
+    """
+    tool_calls = []
+
+    # Pattern to match the entire DSML function_calls block
+    dsml_pattern = r'<｜DSML｜function_calls[^>]*>(.*?)</｜DSML｜function_calls>'
+
+    matches = re.findall(dsml_pattern, content, re.DOTALL)
+
+    for match in matches:
+        # Parse function invocations within the block
+        func_pattern = r'<function_cinvoke\s+name="([^"]+)"[^>]*>(.*?)</function_cinvoke>'
+        func_matches = re.findall(func_pattern, match, re.DOTALL)
+
+        for func_name, params_block in func_matches:
+            # Parse parameters
+            params = {}
+            param_pattern = r'<parameter\s+name="([^"]+)"(?:\s+string="[^"]*")?>([^<]*)</parameter>'
+            param_matches = re.findall(param_pattern, params_block, re.DOTALL)
+
+            for param_name, param_value in param_matches:
+                # Try to parse as JSON if it looks like JSON
+                param_value = param_value.strip()
+                if param_value.startswith('{') or param_value.startswith('['):
+                    try:
+                        params[param_name] = json.loads(param_value)
+                    except json.JSONDecodeError:
+                        params[param_name] = param_value
+                else:
+                    params[param_name] = param_value
+
+            tool_call = {
+                "id": f"call_{len(tool_calls)}",
+                "type": "function",
+                "function": {
+                    "name": func_name,
+                    "arguments": json.dumps(params) if params else "{}"
+                }
+            }
+            tool_calls.append(tool_call)
+
+    # Clean the content by removing DSML blocks
+    cleaned_content = re.sub(dsml_pattern, '', content, flags=re.DOTALL)
+
+    return tool_calls, cleaned_content
+
+
+def clean_dsml_content(content: str) -> str:
+    """
+    Remove all DSML-related tags from content.
+
+    Args:
+        content: Content that may contain DSML tags
+
+    Returns:
+        Cleaned content without any DSML markup
+    """
+    if not content:
+        return ""
+
+    patterns = [
+        # DSML wrapper tags
+        r'<｜DSML｜[^>]*>.*?</｜DSML｜[^>]*>',
+        r'<｜DSML｜[^>]*/?>',
+        r'</｜DSML｜[^>]*>',
+        # Function invocation tags
+        r'<function_cinvoke[^>]*>.*?</function_cinvoke>',
+        r'<function_cinvoke[^>]*/?>',
+        r'</function_cinvoke>',
+        # Parameter tags
+        r'<parameter[^>]*>.*?</parameter>',
+        r'<parameter[^>]*/?>',
+        r'</parameter>',
+        # Any remaining DSML-style tags
+        r'<｜[^>｜]+｜[^>]*>',
+        r'</｜[^>｜]+｜[^>]*>',
+        # Standalone DSML markers
+        r'｜DSML｜[^\s]*',
+    ]
+
+    cleaned = content
+    for pattern in patterns:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.DOTALL)
+
+    # Clean up extra whitespace
+    cleaned = re.sub(r'\n\s*\n+', '\n\n', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+
+    return cleaned.strip()
+
+
 class StreamChunk:
     """Represents a chunk of streamed response."""
-    def __init__(self, content: str = "", reasoning: str = ""):
+    def __init__(self, content: str = "", reasoning: str = "", tool_calls: Optional[List[Dict]] = None, finish_reason: Optional[str] = None):
         self.content = content
         self.reasoning = reasoning
+        self.tool_calls = tool_calls
+        self.finish_reason = finish_reason
 
 
 def stream_chat_response(
@@ -31,7 +141,9 @@ def stream_chat_response(
     base_url: Optional[str] = None,
     model: str = "gpt-4o-mini",
     temperature: float = 0.7,
-    max_tokens: int = 2000
+    max_tokens: int = 2000,
+    tools: Optional[List[Dict]] = None,
+    tool_choice: Optional[str] = "auto"
 ) -> Iterator[StreamChunk]:
     """
     Stream chat response from OpenAI API.
@@ -44,20 +156,40 @@ def stream_chat_response(
         model: Model name to use
         temperature: Sampling temperature (0-2)
         max_tokens: Maximum tokens to generate
+        tools: Optional list of tool definitions for function calling
+        tool_choice: Tool choice strategy ('auto', 'none', or specific tool)
 
     Yields:
         StreamChunk objects containing content and/or reasoning
     """
     client = get_client(api_key, base_url)
 
+    # Check if this is a DeepSeek model (which uses DSML format)
+    is_deepseek = "deepseek" in model.lower() or (base_url and "deepseek" in base_url.lower())
+
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=True
-        )
+        # Build request parameters
+        request_params = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True
+        }
+
+        # Add tools if provided
+        if tools:
+            request_params["tools"] = tools
+            if tool_choice:
+                request_params["tool_choice"] = tool_choice
+
+        response = client.chat.completions.create(**request_params)
+
+        # Track accumulated content for DSML parsing
+        accumulated_content = ""
+        accumulated_reasoning = ""
+        accumulated_tool_calls = {}
+        finish_reason = None
 
         for chunk in response:
             if chunk.choices:
@@ -65,8 +197,70 @@ def stream_chat_response(
                 content = getattr(delta, 'content', None) or ""
                 # DeepSeek R1 returns reasoning_content in delta
                 reasoning = getattr(delta, 'reasoning_content', None) or ""
-                if content or reasoning:
-                    yield StreamChunk(content=content, reasoning=reasoning)
+
+                # Accumulate for DSML parsing (DeepSeek format)
+                if content:
+                    accumulated_content += content
+                if reasoning:
+                    accumulated_reasoning += reasoning
+
+                # Handle standard OpenAI tool calls in streaming mode
+                tool_calls_chunk = getattr(delta, 'tool_calls', None)
+                if tool_calls_chunk:
+                    for tc in tool_calls_chunk:
+                        index = tc.index if hasattr(tc, 'index') else 0
+                        if index not in accumulated_tool_calls:
+                            accumulated_tool_calls[index] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+
+                        if hasattr(tc, 'id') and tc.id:
+                            accumulated_tool_calls[index]['id'] = tc.id
+                        if hasattr(tc, 'type') and tc.type:
+                            accumulated_tool_calls[index]['type'] = tc.type
+                        if hasattr(tc, 'function'):
+                            func = tc.function
+                            if hasattr(func, 'name') and func.name:
+                                accumulated_tool_calls[index]['function']['name'] += func.name
+                            if hasattr(func, 'arguments') and func.arguments:
+                                accumulated_tool_calls[index]['function']['arguments'] += func.arguments
+
+                # Check for finish reason
+                if chunk.choices[0].finish_reason:
+                    finish_reason = chunk.choices[0].finish_reason
+
+                # For DeepSeek, we'll parse DSML at the end
+                # For other models, stream normally
+                if not is_deepseek:
+                    if content or reasoning:
+                        yield StreamChunk(content=content, reasoning=reasoning)
+
+        # After streaming completes:
+        # 1. Parse DSML for DeepSeek models
+        # 2. Yield any accumulated tool calls
+
+        if is_deepseek and tools:
+            # Parse DSML format tool calls from accumulated content
+            dsml_tool_calls, cleaned_content = parse_dsml_tool_calls(accumulated_content)
+
+            # Also clean up any remaining DSML tags from reasoning
+            cleaned_reasoning = clean_dsml_content(accumulated_reasoning) if accumulated_reasoning else ""
+
+            # Yield the cleaned content as a single chunk
+            if cleaned_content or cleaned_reasoning:
+                yield StreamChunk(content=cleaned_content, reasoning=cleaned_reasoning)
+
+            # Yield DSML tool calls if found
+            if dsml_tool_calls:
+                yield StreamChunk(tool_calls=dsml_tool_calls, finish_reason="tool_calls")
+            # Otherwise yield standard tool calls if found
+            elif accumulated_tool_calls and finish_reason == "tool_calls":
+                tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
+                yield StreamChunk(tool_calls=tool_calls_list, finish_reason="tool_calls")
+        else:
+            # For non-DeepSeek models, yield any accumulated tool calls
+            if accumulated_tool_calls and finish_reason == "tool_calls":
+                tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
+                yield StreamChunk(tool_calls=tool_calls_list, finish_reason="tool_calls")
+
 
     except Exception as e:
         yield StreamChunk(content=f"\n\nError: {str(e)}")
@@ -170,6 +364,70 @@ PROVIDERS = {
         "default_models": [],
     },
 }
+
+
+def chat_response_with_tools(
+    messages: List[Dict],
+    tools: List[Dict],
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: str = "gpt-4o-mini",
+    temperature: float = 0.7,
+    max_tokens: int = 2000,
+    tool_choice: str = "auto"
+) -> Dict:
+    """
+    Get chat response with function calling support (non-streaming).
+
+    Args:
+        messages: List of message dicts
+        tools: List of tool/function definitions
+        api_key: API key
+        base_url: Custom base URL
+        model: Model name
+        temperature: Sampling temperature
+        max_tokens: Maximum tokens
+        tool_choice: Tool choice strategy
+
+    Returns:
+        Dict with 'content', 'tool_calls', 'finish_reason', etc.
+    """
+    client = get_client(api_key, base_url)
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+
+        message = response.choices[0].message
+        result = {
+            "content": message.content or "",
+            "tool_calls": [],
+            "finish_reason": response.choices[0].finish_reason
+        }
+
+        if message.tool_calls:
+            result["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments
+                    }
+                }
+                for tc in message.tool_calls
+            ]
+
+        return result
+
+    except Exception as e:
+        return {"content": f"Error: {str(e)}", "tool_calls": [], "finish_reason": "error"}
 
 
 def get_available_models(

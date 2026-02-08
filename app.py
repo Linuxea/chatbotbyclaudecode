@@ -9,6 +9,7 @@ from typing import Optional
 import database
 import llm
 import file_processor
+import chart_tools
 
 # Page configuration
 st.set_page_config(
@@ -286,8 +287,18 @@ def render_sidebar():
                     st.session_state.system_prompt = "You are an expert programmer. Provide clean, well-documented code with explanations."
                     st.rerun()
             with preset_col2:
+                if st.button("📊 图表助手", use_container_width=True):
+                    st.session_state.system_prompt = chart_tools.CHART_ASSISTANT_PROMPT
+                    st.rerun()
+
+            preset_col3, preset_col4 = st.columns(2)
+            with preset_col3:
                 if st.button("📝 翻译助手", use_container_width=True):
                     st.session_state.system_prompt = "You are a professional translator. Translate accurately while maintaining the original meaning and tone."
+                    st.rerun()
+            with preset_col4:
+                if st.button("🧹 清除", use_container_width=True):
+                    st.session_state.system_prompt = ""
                     st.rerun()
 
         st.divider()
@@ -545,10 +556,12 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
             # Get streaming response
             with st.chat_message("assistant"):
                 import time
+                import json
 
                 full_response = ""
                 full_reasoning = ""
                 has_reasoning = False
+                tool_calls = None
 
                 # Use a single container for all streaming content to reduce rerenders
                 stream_container = st.empty()
@@ -575,14 +588,22 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
 
                     return '\n'.join(content_parts)
 
-                # Stream the response
+                # Check if user wants charts (look for keywords in prompt)
+                needs_chart = any(keyword in prompt.lower() for keyword in ['chart', 'graph', '图表', '图', 'visualize', '可视化', 'plot', '绘制'])
+
+                # Check if this is DeepSeek model
+                is_deepseek = "deepseek" in model.lower()
+
+                # Stream the response with potential tool calls
                 for chunk in llm.stream_chat_response(
                     messages=api_messages,
                     api_key=api_key,
                     base_url=base_url if base_url else None,
                     model=model,
                     temperature=temperature,
-                    max_tokens=max_tokens
+                    max_tokens=max_tokens,
+                    tools=chart_tools.CHART_TOOLS if needs_chart else None,
+                    tool_choice="auto" if needs_chart else None
                 ):
                     current_time = time.time()
 
@@ -596,15 +617,72 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
                         full_response += chunk.content
                         pending_update = True
 
-                    # Throttle UI updates to improve performance
-                    if pending_update and (current_time - last_update_time >= update_interval):
+                    # Capture tool calls
+                    if chunk.tool_calls:
+                        tool_calls = chunk.tool_calls
+
+                    # For DeepSeek with DSML, we only get content at the end (already cleaned)
+                    # For other models, stream normally
+                    if is_deepseek and needs_chart:
+                        # Don't update UI during streaming for DeepSeek with tools
+                        # The content will be DSML which we don't want to show
+                        pass
+                    elif pending_update and (current_time - last_update_time >= update_interval):
                         stream_container.markdown(render_stream_content(), unsafe_allow_html=True)
                         last_update_time = current_time
                         pending_update = False
 
                 # Final update to ensure all content is displayed
-                if pending_update:
+                # For DeepSeek with tools, this is the first time we show the cleaned content
+                if pending_update or (is_deepseek and needs_chart):
                     stream_container.markdown(render_stream_content(), unsafe_allow_html=True)
+
+                # Clean up any remaining DSML tags from the response (extra safety)
+                full_response = llm.clean_dsml_content(full_response)
+                full_reasoning = llm.clean_dsml_content(full_reasoning) if full_reasoning else ""
+
+                # Handle tool calls if present
+                if tool_calls:
+                    st.markdown("🛠️ **执行图表生成...**")
+
+                    # Execute each tool call
+                    for tool_call in tool_calls:
+                        function_name = tool_call["function"]["name"]
+                        arguments = json.loads(tool_call["function"]["arguments"])
+
+                        # Execute the chart function
+                        result = chart_tools.execute_chart_function(function_name, arguments)
+
+                        # Add tool result to messages for context
+                        api_messages.append({
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [tool_call]
+                        })
+                        api_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": json.dumps(result)
+                        })
+
+                    # Get final response after tool execution
+                    st.markdown("✅ **图表已生成，正在生成解释...**")
+                    final_response = llm.chat_response_with_tools(
+                        messages=api_messages,
+                        tools=chart_tools.CHART_TOOLS,
+                        api_key=api_key,
+                        base_url=base_url if base_url else None,
+                        model=model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tool_choice="none"  # Don't call more tools
+                    )
+
+                    if final_response["content"]:
+                        # Clean any DSML tags from final response too
+                        clean_final = llm.clean_dsml_content(final_response["content"])
+                        st.markdown(clean_final)
+                        full_response += "\n\n" + clean_final
 
                 # Update session state with both reasoning and content
                 message_data = {
