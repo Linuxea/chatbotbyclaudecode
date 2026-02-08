@@ -386,16 +386,65 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
     # Display chat messages
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
-            # If assistant message has reasoning, display it
+            # If assistant message has reasoning, display it with collapsible component
             if message["role"] == "assistant" and message.get("reasoning"):
-                st.markdown("**🤔 Thinking:**")
-                st.markdown(
-                    f"<div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; color: #666;'>"
-                    f"{message['reasoning']}"
-                    f"</div>",
-                    unsafe_allow_html=True
+                st.html(
+                    f"""
+                    <style>
+                        .thinking-container {{
+                            margin-bottom: 12px;
+                            border: 1px solid #e0e3e7;
+                            border-radius: 8px;
+                            overflow: hidden;
+                        }}
+                        .thinking-header {{
+                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                            color: white;
+                            padding: 10px 16px;
+                            cursor: pointer;
+                            display: flex;
+                            align-items: center;
+                            gap: 8px;
+                            font-weight: 500;
+                            user-select: none;
+                        }}
+                        .thinking-header:hover {{
+                            background: linear-gradient(135deg, #5a6fd6 0%, #6a4190 100%);
+                        }}
+                        .thinking-header::before {{
+                            content: "🧠";
+                        }}
+                        .thinking-content {{
+                            background-color: #f8f9fa;
+                            padding: 16px;
+                            color: #555;
+                            line-height: 1.6;
+                            white-space: pre-wrap;
+                            font-size: 0.95em;
+                            border-top: 1px solid #e0e3e7;
+                        }}
+                        details > summary {{
+                            list-style: none;
+                        }}
+                        details > summary::-webkit-details-marker {{
+                            display: none;
+                        }}
+                        details > summary::after {{
+                            content: "▲";
+                            margin-left: auto;
+                            font-size: 0.8em;
+                            transition: transform 0.2s;
+                        }}
+                        details[open] > summary::after {{
+                            content: "▼";
+                        }}
+                    </style>
+                    <details class="thinking-container" open>
+                        <summary class="thinking-header">Thinking Process</summary>
+                        <div class="thinking-content">{message['reasoning']}</div>
+                    </details>
+                    """
                 )
-                st.markdown("**💬 Response:**")
             # Display message content
             st.markdown(message["content"])
             # Display attached image if present
@@ -518,19 +567,48 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
                     if chunk.reasoning:
                         has_reasoning = True
                         full_reasoning += chunk.reasoning
-                        reasoning_header.markdown("**🤔 Thinking:**")
-                        reasoning_container.markdown(
-                            f"<div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; color: #666;'>"
-                            f"{full_reasoning}"
-                            f"</div>",
-                            unsafe_allow_html=True
+                        reasoning_header.html(
+                            f"""
+                            <style>
+                                .thinking-container-stream {{
+                                    margin-bottom: 12px;
+                                    border: 1px solid #e0e3e7;
+                                    border-radius: 8px;
+                                    overflow: hidden;
+                                }}
+                                .thinking-header-stream {{
+                                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                                    color: white;
+                                    padding: 10px 16px;
+                                    display: flex;
+                                    align-items: center;
+                                    gap: 8px;
+                                    font-weight: 500;
+                                }}
+                                .thinking-header-stream::before {{
+                                    content: "🧠";
+                                }}
+                                .thinking-content-stream {{
+                                    background-color: #f8f9fa;
+                                    padding: 16px;
+                                    color: #555;
+                                    line-height: 1.6;
+                                    white-space: pre-wrap;
+                                    font-size: 0.95em;
+                                    border-top: 1px solid #e0e3e7;
+                                }}
+                            </style>
+                            <div class="thinking-container-stream">
+                                <div class="thinking-header-stream">Thinking Process</div>
+                                <div class="thinking-content-stream">{full_reasoning}</div>
+                            </div>
+                            """
                         )
 
                     # Accumulate main content
                     if chunk.content:
                         full_response += chunk.content
-                        content_header.markdown("**💬 Response:**")
-                        content_container.markdown(full_response)
+                        content_header.markdown(full_response)
 
                 # Update session state with both reasoning and content
                 message_data = {
