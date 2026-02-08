@@ -544,15 +544,36 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
 
             # Get streaming response
             with st.chat_message("assistant"):
+                import time
+
                 full_response = ""
                 full_reasoning = ""
                 has_reasoning = False
 
-                # Create containers for reasoning and content
-                reasoning_header = st.empty()
-                reasoning_container = st.empty()
-                content_header = st.empty()
-                content_container = st.empty()
+                # Use a single container for all streaming content to reduce rerenders
+                stream_container = st.empty()
+                last_update_time = time.time()
+                update_interval = 0.05  # Update at most 20 times per second
+                pending_update = False
+
+                def render_stream_content():
+                    """Render current streaming state."""
+                    content_parts = []
+
+                    # Add reasoning section if present
+                    if full_reasoning:
+                        content_parts.append(
+                            f'<div style="margin-bottom: 12px; border: 1px solid #e0e3e7; border-radius: 8px; overflow: hidden;">'
+                            f'<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 10px 16px; font-weight: 500;">🧠 Thinking Process</div>'
+                            f'<div style="background-color: #f8f9fa; padding: 16px; color: #555; line-height: 1.6; white-space: pre-wrap; font-size: 0.95em; border-top: 1px solid #e0e3e7;">{full_reasoning}</div>'
+                            f'</div>'
+                        )
+
+                    # Add main content
+                    if full_response:
+                        content_parts.append(f'<div style="line-height: 1.6;">{full_response}</div>')
+
+                    return '\n'.join(content_parts)
 
                 # Stream the response
                 for chunk in llm.stream_chat_response(
@@ -563,52 +584,27 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
                     temperature=temperature,
                     max_tokens=max_tokens
                 ):
-                    # Accumulate reasoning content
+                    current_time = time.time()
+
+                    # Accumulate content
                     if chunk.reasoning:
                         has_reasoning = True
                         full_reasoning += chunk.reasoning
-                        reasoning_header.html(
-                            f"""
-                            <style>
-                                .thinking-container-stream {{
-                                    margin-bottom: 12px;
-                                    border: 1px solid #e0e3e7;
-                                    border-radius: 8px;
-                                    overflow: hidden;
-                                }}
-                                .thinking-header-stream {{
-                                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                                    color: white;
-                                    padding: 10px 16px;
-                                    display: flex;
-                                    align-items: center;
-                                    gap: 8px;
-                                    font-weight: 500;
-                                }}
-                                .thinking-header-stream::before {{
-                                    content: "🧠";
-                                }}
-                                .thinking-content-stream {{
-                                    background-color: #f8f9fa;
-                                    padding: 16px;
-                                    color: #555;
-                                    line-height: 1.6;
-                                    white-space: pre-wrap;
-                                    font-size: 0.95em;
-                                    border-top: 1px solid #e0e3e7;
-                                }}
-                            </style>
-                            <div class="thinking-container-stream">
-                                <div class="thinking-header-stream">Thinking Process</div>
-                                <div class="thinking-content-stream">{full_reasoning}</div>
-                            </div>
-                            """
-                        )
+                        pending_update = True
 
-                    # Accumulate main content
                     if chunk.content:
                         full_response += chunk.content
-                        content_header.markdown(full_response)
+                        pending_update = True
+
+                    # Throttle UI updates to improve performance
+                    if pending_update and (current_time - last_update_time >= update_interval):
+                        stream_container.markdown(render_stream_content(), unsafe_allow_html=True)
+                        last_update_time = current_time
+                        pending_update = False
+
+                # Final update to ensure all content is displayed
+                if pending_update:
+                    stream_container.markdown(render_stream_content(), unsafe_allow_html=True)
 
                 # Update session state with both reasoning and content
                 message_data = {
