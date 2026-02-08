@@ -11,6 +11,7 @@ import llm
 import file_processor
 import chart_tools
 import tool_executor
+import logger
 
 # Page configuration
 st.set_page_config(
@@ -648,20 +649,21 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
                         pending_update = False
 
                 # Final update to ensure all content is displayed
-                # For DeepSeek with tools, this is the first time we show the cleaned content
                 if pending_update:
                     stream_container.markdown(render_stream_content(), unsafe_allow_html=True)
-
-                # Clean up any remaining DSML tags from the response (extra safety)
-                full_response = llm.clean_dsml_content(full_response)
-                full_reasoning = llm.clean_dsml_content(full_reasoning) if full_reasoning else ""
 
                 # Handle tool calls if present
                 if tool_calls:
                     st.markdown("🛠️ **执行图表生成...**")
 
+                    # Log tool calls before execution
+                    logger.log_tool_call_execution(tool_calls, [])
+
                     executions = executor.execute_calls(tool_calls)
                     api_messages.extend(executor.build_tool_messages(executions))
+
+                    # Log tool execution results
+                    logger.log_tool_call_execution(tool_calls, executions)
 
                     # Get final response after tool execution
                     st.markdown("✅ **图表已生成，正在生成解释...**")

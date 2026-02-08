@@ -7,6 +7,8 @@ import json
 from typing import List, Dict, Iterator, Optional, Tuple
 from openai import OpenAI
 
+import logger
+
 
 def get_client(api_key: Optional[str] = None, base_url: Optional[str] = None) -> OpenAI:
     """Get OpenAI client with API key and optional custom base URL."""
@@ -84,44 +86,28 @@ def parse_dsml_tool_calls(content: str) -> Tuple[List[Dict], str]:
 
 def clean_dsml_content(content: str) -> str:
     """
-    Remove all DSML-related tags from content.
+    Remove DSML (DeepSeek Markup Language) tags from content.
+
+    DSML format used by DeepSeek for tool calls:
+    <｜DSML｜function_calls>
+      <function_cinvoke name="...">...</function_cinvoke>
+    </｜DSML｜function_calls>
 
     Args:
         content: Content that may contain DSML tags
 
     Returns:
-        Cleaned content without any DSML markup
+        Cleaned content without DSML markup
     """
     if not content:
         return ""
 
-    patterns = [
-        # DSML wrapper tags
-        r'<[|｜]DSML[|｜][^>]*>.*?</[|｜]DSML[|｜][^>]*>',
-        r'<[|｜]DSML[|｜][^>]*/?>',
-        r'</[|｜]DSML[|｜][^>]*>',
-        # Function invocation tags
-        r'<function_cinvoke[^>]*>.*?</function_cinvoke>',
-        r'<function_cinvoke[^>]*/?>',
-        r'</function_cinvoke>',
-        # Parameter tags
-        r'<parameter[^>]*>.*?</parameter>',
-        r'<parameter[^>]*/?>',
-        r'</parameter>',
-        # Any remaining DSML-style tags
-        r'<[|｜][^>|｜]+[|｜][^>]*>',
-        r'</[|｜][^>|｜]+[|｜][^>]*>',
-        # Standalone DSML markers
-        r'[|｜]DSML[|｜][^\s]*',
-    ]
+    # Single regex to remove entire DSML blocks (handles both full-width and ASCII pipes)
+    dsml_pattern = r'<[|｜]DSML[|｜][^>]*>.*?</[|｜]DSML[|｜][^>]*>'
+    cleaned = re.sub(dsml_pattern, '', content, flags=re.DOTALL | re.IGNORECASE)
 
-    cleaned = content
-    for pattern in patterns:
-        cleaned = re.sub(pattern, '', cleaned, flags=re.DOTALL | re.IGNORECASE)
-
-    # Clean up extra whitespace
+    # Clean up extra blank lines (preserve single newlines, collapse multiple)
     cleaned = re.sub(r'\n\s*\n+', '\n\n', cleaned)
-    cleaned = re.sub(r'\s+', ' ', cleaned)
 
     return cleaned.strip()
 
@@ -243,6 +229,9 @@ def stream_chat_response(
     # Check if this is a DeepSeek model (which uses DSML format)
     is_deepseek = "deepseek" in model.lower() or (base_url and "deepseek" in base_url.lower())
 
+    # Log the request
+    logger.log_llm_request(messages, model, temperature, max_tokens, tools, stream=True)
+
     try:
         # Build request parameters
         request_params = {
@@ -266,6 +255,7 @@ def stream_chat_response(
         accumulated_reasoning = ""
         accumulated_tool_calls = {}
         finish_reason = None
+        chunk_index = 0
 
         for chunk in response:
             if chunk.choices:
@@ -273,6 +263,17 @@ def stream_chat_response(
                 content = getattr(delta, 'content', None) or ""
                 # DeepSeek R1 returns reasoning_content in delta
                 reasoning = getattr(delta, 'reasoning_content', None) or ""
+
+                # Log the chunk for debugging
+                chunk_tool_calls = getattr(delta, 'tool_calls', None)
+                logger.log_stream_chunk(
+                    chunk_index=chunk_index,
+                    content=content,
+                    reasoning=reasoning,
+                    tool_calls=chunk_tool_calls,
+                    finish_reason=chunk.choices[0].finish_reason
+                )
+                chunk_index += 1
 
                 # Accumulate for DSML parsing (DeepSeek format)
                 if content:
@@ -314,9 +315,25 @@ def stream_chat_response(
         # 1. Parse DSML for DeepSeek models
         # 2. Yield any accumulated tool calls
 
+        # Log stream summary before any DSML processing
+        logger.log_stream_summary(
+            total_chunks=chunk_index,
+            accumulated_content=accumulated_content,
+            accumulated_reasoning=accumulated_reasoning,
+            parsed_tool_calls=None  # Will be updated below
+        )
+
         if is_deepseek and tools:
             # Parse DSML format tool calls from accumulated content
             dsml_tool_calls, cleaned_content = parse_dsml_tool_calls(accumulated_content)
+
+            # Log the parsed result
+            logger.log_stream_summary(
+                total_chunks=chunk_index,
+                accumulated_content=cleaned_content,
+                accumulated_reasoning=accumulated_reasoning,
+                parsed_tool_calls=dsml_tool_calls
+            )
 
             # Also clean up any remaining DSML tags from reasoning
             cleaned_reasoning = clean_dsml_content(accumulated_reasoning) if accumulated_reasoning else ""
@@ -340,6 +357,7 @@ def stream_chat_response(
 
 
     except Exception as e:
+        logger.log_error(e, context="stream_chat_response")
         yield StreamChunk(content=f"\n\nError: {str(e)}")
 
 
@@ -471,6 +489,9 @@ def chat_response_with_tools(
     """
     client = get_client(api_key, base_url)
 
+    # Log the request
+    logger.log_llm_request(messages, model, temperature, max_tokens, tools, stream=False)
+
     try:
         response = client.chat.completions.create(
             model=model,
@@ -501,9 +522,17 @@ def chat_response_with_tools(
                 for tc in message.tool_calls
             ]
 
+        # Log the response
+        logger.log_non_streaming_response(
+            content=result["content"],
+            tool_calls=result["tool_calls"],
+            finish_reason=result["finish_reason"]
+        )
+
         return result
 
     except Exception as e:
+        logger.log_error(e, context="chat_response_with_tools")
         return {"content": f"Error: {str(e)}", "tool_calls": [], "finish_reason": "error"}
 
 
