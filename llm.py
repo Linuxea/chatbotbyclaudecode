@@ -39,21 +39,21 @@ def parse_dsml_tool_calls(content: str) -> Tuple[List[Dict], str]:
     """
     tool_calls = []
 
-    # Pattern to match the entire DSML function_calls block
-    dsml_pattern = r'<｜DSML｜function_calls[^>]*>(.*?)</｜DSML｜function_calls>'
+    # Pattern to match the entire DSML function_calls block (supports full-width and ASCII pipes)
+    dsml_pattern = r'<[|｜]DSML[|｜]function_calls[^>]*>(.*?)</[|｜]DSML[|｜]function_calls>'
 
-    matches = re.findall(dsml_pattern, content, re.DOTALL)
+    matches = re.findall(dsml_pattern, content, re.DOTALL | re.IGNORECASE)
 
     for match in matches:
         # Parse function invocations within the block
         func_pattern = r'<function_cinvoke\s+name="([^"]+)"[^>]*>(.*?)</function_cinvoke>'
-        func_matches = re.findall(func_pattern, match, re.DOTALL)
+        func_matches = re.findall(func_pattern, match, re.DOTALL | re.IGNORECASE)
 
         for func_name, params_block in func_matches:
             # Parse parameters
             params = {}
-            param_pattern = r'<parameter\s+name="([^"]+)"(?:\s+string="[^"]*")?>([^<]*)</parameter>'
-            param_matches = re.findall(param_pattern, params_block, re.DOTALL)
+            param_pattern = r'<parameter\s+name="([^"]+)"(?:\s+string="[^"]*")?\s*>(.*?)</parameter>'
+            param_matches = re.findall(param_pattern, params_block, re.DOTALL | re.IGNORECASE)
 
             for param_name, param_value in param_matches:
                 # Try to parse as JSON if it looks like JSON
@@ -77,7 +77,7 @@ def parse_dsml_tool_calls(content: str) -> Tuple[List[Dict], str]:
             tool_calls.append(tool_call)
 
     # Clean the content by removing DSML blocks
-    cleaned_content = re.sub(dsml_pattern, '', content, flags=re.DOTALL)
+    cleaned_content = re.sub(dsml_pattern, '', content, flags=re.DOTALL | re.IGNORECASE)
 
     return tool_calls, cleaned_content
 
@@ -97,9 +97,9 @@ def clean_dsml_content(content: str) -> str:
 
     patterns = [
         # DSML wrapper tags
-        r'<｜DSML｜[^>]*>.*?</｜DSML｜[^>]*>',
-        r'<｜DSML｜[^>]*/?>',
-        r'</｜DSML｜[^>]*>',
+        r'<[|｜]DSML[|｜][^>]*>.*?</[|｜]DSML[|｜][^>]*>',
+        r'<[|｜]DSML[|｜][^>]*/?>',
+        r'</[|｜]DSML[|｜][^>]*>',
         # Function invocation tags
         r'<function_cinvoke[^>]*>.*?</function_cinvoke>',
         r'<function_cinvoke[^>]*/?>',
@@ -109,15 +109,15 @@ def clean_dsml_content(content: str) -> str:
         r'<parameter[^>]*/?>',
         r'</parameter>',
         # Any remaining DSML-style tags
-        r'<｜[^>｜]+｜[^>]*>',
-        r'</｜[^>｜]+｜[^>]*>',
+        r'<[|｜][^>|｜]+[|｜][^>]*>',
+        r'</[|｜][^>|｜]+[|｜][^>]*>',
         # Standalone DSML markers
-        r'｜DSML｜[^\s]*',
+        r'[|｜]DSML[|｜][^\s]*',
     ]
 
     cleaned = content
     for pattern in patterns:
-        cleaned = re.sub(pattern, '', cleaned, flags=re.DOTALL)
+        cleaned = re.sub(pattern, '', cleaned, flags=re.DOTALL | re.IGNORECASE)
 
     # Clean up extra whitespace
     cleaned = re.sub(r'\n\s*\n+', '\n\n', cleaned)
@@ -133,6 +133,82 @@ class StreamChunk:
         self.reasoning = reasoning
         self.tool_calls = tool_calls
         self.finish_reason = finish_reason
+
+
+class LLMProvider:
+    """Provider wrapper to isolate model-specific behaviors."""
+    def __init__(
+        self,
+        name: str,
+        api_key: Optional[str],
+        base_url: Optional[str],
+        model: str
+    ):
+        self.name = name
+        self.api_key = api_key
+        self.base_url = base_url
+        self.model = model
+
+    def supports_system_role(self) -> bool:
+        return True
+
+    def supports_tools(self) -> bool:
+        return True
+
+    def stream_chat(
+        self,
+        messages: List[Dict],
+        temperature: float,
+        max_tokens: int,
+        tools: Optional[List[Dict]] = None,
+        tool_choice: Optional[str] = "auto"
+    ) -> Iterator[StreamChunk]:
+        return stream_chat_response(
+            messages=messages,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            model=self.model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            tool_choice=tool_choice
+        )
+
+    def chat_with_tools(
+        self,
+        messages: List[Dict],
+        tools: List[Dict],
+        temperature: float,
+        max_tokens: int,
+        tool_choice: str = "auto"
+    ) -> Dict:
+        return chat_response_with_tools(
+            messages=messages,
+            tools=tools,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            model=self.model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tool_choice=tool_choice
+        )
+
+
+class DeepSeekProvider(LLMProvider):
+    """DeepSeek-specific provider behavior."""
+    def supports_system_role(self) -> bool:
+        return "reasoner" not in self.model.lower()
+
+
+def get_provider(
+    provider_name: str,
+    api_key: Optional[str],
+    base_url: Optional[str],
+    model: str
+) -> LLMProvider:
+    if provider_name.lower() == "deepseek":
+        return DeepSeekProvider(provider_name, api_key, base_url, model)
+    return LLMProvider(provider_name, api_key, base_url, model)
 
 
 def stream_chat_response(

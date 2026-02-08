@@ -152,6 +152,8 @@ CHART_TOOLS = [
 ]
 
 
+
+
 def execute_chart_function(function_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """
     Execute a chart function with the given arguments.
@@ -314,6 +316,25 @@ def render_data_table(
     except Exception as e:
         st.error(f"表格渲染失败: {str(e)}")
         return {"success": False, "error": str(e)}
+
+
+CHART_TOOL_HANDLERS = {
+    "render_chart": render_chart,
+    "render_comparison_chart": render_comparison_chart,
+    "render_data_table": render_data_table,
+}
+
+
+def should_use_chart_tools(prompt: str) -> bool:
+    """Return True if the prompt likely needs chart tooling."""
+    if not prompt:
+        return False
+    keywords = [
+        "chart", "graph", "visualize", "plot",
+        "图表", "图", "可视化", "绘制"
+    ]
+    lowered = prompt.lower()
+    return any(keyword in lowered for keyword in keywords)
 
 
 # System prompt for chart assistant

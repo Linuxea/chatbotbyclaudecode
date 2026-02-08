@@ -10,6 +10,7 @@ import database
 import llm
 import file_processor
 import chart_tools
+import tool_executor
 
 # Page configuration
 st.set_page_config(
@@ -497,66 +498,88 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
         st.session_state.messages.append(message_data)
 
         # Get API key
-        api_key = st.session_state.api_key or os.getenv("DEEPSEEK_API_KEY")
+        provider_config = llm.PROVIDERS.get(st.session_state.provider, {})
+        env_key = provider_config.get("env_key", "")
+        api_key = st.session_state.api_key or (os.getenv(env_key) if env_key else "")
 
         if not api_key:
             with st.chat_message("assistant"):
                 st.error("Please provide a DeepSeek API key in the sidebar or set DEEPSEEK_API_KEY environment variable.")
         else:
-            # Prepare messages for API
+            # Prepare provider and messages for API
+            provider = llm.get_provider(
+                st.session_state.provider,
+                api_key,
+                base_url if base_url else None,
+                model
+            )
+
             # We need to reconstruct the history with the full content (including file/image)
             api_messages = []
 
             # Add system prompt if set
             system_prompt = st.session_state.system_prompt.strip()
+            system_prefix = ""
+            system_prefix_pending = False
             if system_prompt:
-                # Check if model supports system messages
-                # DeepSeek Reasoner doesn't support system role, merge into first user message
-                if "reasoner" in model.lower():
-                    # For models that don't support system role, prepend to first user message
-                    system_prefix = f"[System Instruction: {system_prompt}]\n\n"
-                    st.info(f"📝 System Prompt 已合并到消息 (Reasoner 不支持 system role): {system_prompt[:50]}...")
-                else:
-                    # Normal model: add system message
+                if provider.supports_system_role():
                     api_messages.append({"role": "system", "content": system_prompt})
                     st.info(f"📝 使用 System Prompt: {system_prompt[:50]}...")
+                else:
+                    system_prefix = f"[System Instruction: {system_prompt}]\n\n"
+                    system_prefix_pending = True
+                    st.info(f"📝 System Prompt 已合并到消息: {system_prompt[:50]}...")
+
+            def apply_system_prefix(content: str) -> str:
+                nonlocal system_prefix_pending
+                if system_prefix_pending:
+                    system_prefix_pending = False
+                    return system_prefix + content
+                return content
 
             # Add historical messages
             for msg in st.session_state.messages[:-1]:  # All except current
                 if msg.get("image"):
+                    text_content = msg["content"]
+                    if msg["role"] == "user":
+                        text_content = apply_system_prefix(text_content)
                     # Multimodal format for messages with images
                     api_messages.append({
                         "role": msg["role"],
                         "content": [
-                            {"type": "text", "text": msg["content"]},
+                            {"type": "text", "text": text_content},
                             {"type": "image_url", "image_url": {"url": msg["image"]}}
                         ]
                     })
                 else:
-                    api_messages.append({"role": msg["role"], "content": msg["content"]})
+                    content = msg["content"]
+                    if msg["role"] == "user":
+                        content = apply_system_prefix(content)
+                    api_messages.append({"role": msg["role"], "content": content})
 
             # Add current user message with file/image content
             if image_data:
+                text_prompt = apply_system_prefix(prompt)
                 # Multimodal format for image
                 api_messages.append({
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt},
+                        {"type": "text", "text": text_prompt},
                         {"type": "image_url", "image_url": {"url": image_data}}
                     ]
                 })
             elif file_content:
                 # Text file content appended to message
                 api_message = f"{prompt}\n\n[File Content from {uploaded_file.name}]:\n{file_content}"
+                api_message = apply_system_prefix(api_message)
                 api_messages.append({"role": "user", "content": api_message})
             else:
                 # Plain text message
-                api_messages.append({"role": "user", "content": prompt})
+                api_messages.append({"role": "user", "content": apply_system_prefix(prompt)})
 
             # Get streaming response
             with st.chat_message("assistant"):
                 import time
-                import json
 
                 full_response = ""
                 full_reasoning = ""
@@ -588,21 +611,19 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
 
                     return '\n'.join(content_parts)
 
-                # Check if user wants charts (look for keywords in prompt)
-                needs_chart = any(keyword in prompt.lower() for keyword in ['chart', 'graph', '图表', '图', 'visualize', '可视化', 'plot', '绘制'])
+                # Check if user wants charts
+                needs_chart = chart_tools.should_use_chart_tools(prompt)
 
-                # Check if this is DeepSeek model
-                is_deepseek = "deepseek" in model.lower()
+                tool_registry = tool_executor.ToolRegistry()
+                tool_registry.register_toolset(chart_tools.CHART_TOOLS, chart_tools.CHART_TOOL_HANDLERS)
+                executor = tool_executor.ToolExecutor(tool_registry)
 
                 # Stream the response with potential tool calls
-                for chunk in llm.stream_chat_response(
+                for chunk in provider.stream_chat(
                     messages=api_messages,
-                    api_key=api_key,
-                    base_url=base_url if base_url else None,
-                    model=model,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    tools=chart_tools.CHART_TOOLS if needs_chart else None,
+                    tools=tool_registry.definitions() if needs_chart else None,
                     tool_choice="auto" if needs_chart else None
                 ):
                     current_time = time.time()
@@ -621,20 +642,14 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
                     if chunk.tool_calls:
                         tool_calls = chunk.tool_calls
 
-                    # For DeepSeek with DSML, we only get content at the end (already cleaned)
-                    # For other models, stream normally
-                    if is_deepseek and needs_chart:
-                        # Don't update UI during streaming for DeepSeek with tools
-                        # The content will be DSML which we don't want to show
-                        pass
-                    elif pending_update and (current_time - last_update_time >= update_interval):
+                    if pending_update and (current_time - last_update_time >= update_interval):
                         stream_container.markdown(render_stream_content(), unsafe_allow_html=True)
                         last_update_time = current_time
                         pending_update = False
 
                 # Final update to ensure all content is displayed
                 # For DeepSeek with tools, this is the first time we show the cleaned content
-                if pending_update or (is_deepseek and needs_chart):
+                if pending_update:
                     stream_container.markdown(render_stream_content(), unsafe_allow_html=True)
 
                 # Clean up any remaining DSML tags from the response (extra safety)
@@ -645,34 +660,14 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
                 if tool_calls:
                     st.markdown("🛠️ **执行图表生成...**")
 
-                    # Execute each tool call
-                    for tool_call in tool_calls:
-                        function_name = tool_call["function"]["name"]
-                        arguments = json.loads(tool_call["function"]["arguments"])
-
-                        # Execute the chart function
-                        result = chart_tools.execute_chart_function(function_name, arguments)
-
-                        # Add tool result to messages for context
-                        api_messages.append({
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [tool_call]
-                        })
-                        api_messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call["id"],
-                            "content": json.dumps(result)
-                        })
+                    executions = executor.execute_calls(tool_calls)
+                    api_messages.extend(executor.build_tool_messages(executions))
 
                     # Get final response after tool execution
                     st.markdown("✅ **图表已生成，正在生成解释...**")
-                    final_response = llm.chat_response_with_tools(
+                    final_response = provider.chat_with_tools(
                         messages=api_messages,
-                        tools=chart_tools.CHART_TOOLS,
-                        api_key=api_key,
-                        base_url=base_url if base_url else None,
-                        model=model,
+                        tools=tool_registry.definitions(),
                         temperature=temperature,
                         max_tokens=max_tokens,
                         tool_choice="none"  # Don't call more tools
