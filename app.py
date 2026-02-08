@@ -258,15 +258,26 @@ def render_sidebar():
         st.session_state.max_tokens = max_tokens
 
         # System Prompt (collapsible)
-        with st.expander("📝 System Prompt (可选)", expanded=False):
+        # Show indicator if system prompt is set
+        system_prompt_set = bool(st.session_state.system_prompt.strip())
+        expander_label = "📝 System Prompt (已设置)" if system_prompt_set else "📝 System Prompt (可选)"
+
+        with st.expander(expander_label, expanded=False):
             system_prompt = st.text_area(
                 "自定义系统提示词",
                 value=st.session_state.system_prompt,
                 placeholder="你是一个有帮助的助手...",
                 help="设置 AI 的角色和行为方式。留空则使用默认设置。",
-                height=100
+                height=100,
+                key="system_prompt_input"
             )
             st.session_state.system_prompt = system_prompt
+
+            # Show status
+            if system_prompt_set:
+                st.success(f"✅ 已启用: {st.session_state.system_prompt[:30]}...")
+            else:
+                st.info("使用默认系统提示词")
 
             # Quick presets
             preset_col1, preset_col2 = st.columns(2)
@@ -437,8 +448,18 @@ def render_chat_interface(model: str, temperature: float, max_tokens: int, base_
             api_messages = []
 
             # Add system prompt if set
-            if st.session_state.system_prompt.strip():
-                api_messages.append({"role": "system", "content": st.session_state.system_prompt.strip()})
+            system_prompt = st.session_state.system_prompt.strip()
+            if system_prompt:
+                # Check if model supports system messages
+                # DeepSeek Reasoner doesn't support system role, merge into first user message
+                if "reasoner" in model.lower():
+                    # For models that don't support system role, prepend to first user message
+                    system_prefix = f"[System Instruction: {system_prompt}]\n\n"
+                    st.info(f"📝 System Prompt 已合并到消息 (Reasoner 不支持 system role): {system_prompt[:50]}...")
+                else:
+                    # Normal model: add system message
+                    api_messages.append({"role": "system", "content": system_prompt})
+                    st.info(f"📝 使用 System Prompt: {system_prompt[:50]}...")
 
             # Add historical messages
             for msg in st.session_state.messages[:-1]:  # All except current
