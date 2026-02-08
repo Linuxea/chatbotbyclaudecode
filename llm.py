@@ -303,9 +303,10 @@ def stream_chat_response(
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
 
-                # For DeepSeek, we'll parse DSML at the end
-                # For other models, stream normally
-                if not is_deepseek:
+                # Stream in real-time for better UX
+                # For DeepSeek with tools, skip real-time streaming to avoid duplication
+                # (we'll yield the cleaned content after DSML parsing)
+                if not (is_deepseek and tools):
                     if content or reasoning:
                         yield StreamChunk(content=content, reasoning=reasoning)
 
@@ -332,7 +333,7 @@ def stream_chat_response(
                 tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
                 yield StreamChunk(tool_calls=tool_calls_list, finish_reason="tool_calls")
         else:
-            # For non-DeepSeek models, yield any accumulated tool calls
+            # Yield any accumulated tool calls
             if accumulated_tool_calls and finish_reason == "tool_calls":
                 tool_calls_list = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls.keys())]
                 yield StreamChunk(tool_calls=tool_calls_list, finish_reason="tool_calls")
